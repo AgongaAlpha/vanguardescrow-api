@@ -47,7 +47,8 @@ def handler(event, context):
 
     # Check user credentials
     try:
-        cur.execute("SELECT id, password_hash, role FROM users WHERE email = %s;", (email,))
+        # Using auth0_sub column to store password_hash
+        cur.execute("SELECT id, auth0_sub, role FROM users WHERE email = %s;", (email,))
         row = cur.fetchone()
         if not row:
             cur.close()
