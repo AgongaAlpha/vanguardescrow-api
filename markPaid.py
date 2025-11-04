@@ -1,122 +1,136 @@
 import json
 import os
 import psycopg2
-from http import cookies
-from datetime import datetime
-
-def get_session_user(headers):
-    """Validate session cookie and return user id + role"""
-    cookie_header = headers.get("cookie") or headers.get("Cookie") or ""
-    cookie_obj = cookies.SimpleCookie()
-    cookie_obj.load(cookie_header)
-
-    session_token = None
-    if "session" in cookie_obj:
-        session_token = cookie_obj["session"].value
-
-    if not session_token:
-        return None
-
-    try:
-        conn = psycopg2.connect(
-            host=os.getenv("DB_HOST"),
-            database=os.getenv("DB_NAME"),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASS"),
-            sslmode="require"
-        )
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT u.id, u.role
-            FROM sessions s
-            JOIN users u ON s.user_id = u.id
-            WHERE s.session_token = %s;
-        """, (session_token,))
-        user = cur.fetchone()
-        cur.close()
-        conn.close()
-
-        if not user:
-            return None
-        return {"id": user[0], "role": user[1]}
-    except Exception as e:
-        print("Session validation failed:", e)
-        return None
-
+import datetime
+from decimal import Decimal
 
 def handler(event, context):
-    """POST /.netlify/functions/markPaid"""
+    """
+    Netlify Python Function: /markPaid
+    Marks an escrow as paid (requires authentication via token)
+    """
 
-    # Authenticate user
-    user = get_session_user(event.get("headers", {}))
-    if not user:
-        return {"statusCode": 401, "body": json.dumps({"error": "Not authenticated"})}
-    if user["role"] != "buyer":
-        return {"statusCode": 403, "body": json.dumps({"error": "Only buyers can mark escrow as paid"})}
+    # Get token from Authorization header
+    headers = event.get('headers', {})
+    auth_header = headers.get('authorization', '') or headers.get('Authorization', '')
+    
+    if not auth_header or not auth_header.startswith('Bearer '):
+        return {
+            "statusCode": 401,
+            "body": json.dumps({"error": "Missing or invalid authorization header"})
+        }
+    
+    token = auth_header.replace('Bearer ', '').strip()
 
-    # Parse request
+    # Parse request body
     try:
         data = json.loads(event.get("body", "{}"))
         escrow_id = data.get("escrow_id")
-        tx_id = data.get("tx_id", "").strip()
-        proof_url = data.get("proof_url", "").strip()
-        note = data.get("note", "").strip()
-    except Exception:
-        return {"statusCode": 400, "body": json.dumps({"error": "Invalid JSON body"})}
+    except Exception as e:
+        return {
+            "statusCode": 400,
+            "body": json.dumps({"error": "Invalid JSON body", "details": str(e)})
+        }
 
     if not escrow_id:
-        return {"statusCode": 400, "body": json.dumps({"error": "Missing escrow_id"})}
+        return {
+            "statusCode": 400,
+            "body": json.dumps({"error": "Missing escrow_id"})
+        }
 
-    # Connect to DB
+    # Connect to Neon DB using ONLY DATABASE_URL
     try:
-        conn = psycopg2.connect(
-            host=os.getenv("DB_HOST"),
-            database=os.getenv("DB_NAME"),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASS"),
-            sslmode="require"
-        )
+        database_url = os.getenv("DATABASE_URL")
+        if not database_url:
+            return {
+                "statusCode": 500,
+                "body": json.dumps({"error": "DATABASE_URL environment variable not set"})
+            }
+        
+        conn = psycopg2.connect(database_url)
         cur = conn.cursor()
     except Exception as e:
-        return {"statusCode": 500, "body": json.dumps({"error": "DB connection failed", "details": str(e)})}
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": "Database connection failed", "details": str(e)})
+        }
 
+    # Validate token and get user info
     try:
-        # Verify escrow belongs to buyer
-        cur.execute("SELECT id, status FROM escrows WHERE id = %s AND buyer_id = %s;", (escrow_id, user["id"]))
-        escrow = cur.fetchone()
-        if not escrow:
+        cur.execute("""
+            SELECT u.id, u.role
+            FROM sessions s 
+            JOIN users u ON s.user_id = u.id 
+            WHERE s.session_token = %s AND s.expires_at > %s
+        """, (token, datetime.datetime.utcnow()))
+        
+        user_result = cur.fetchone()
+        if not user_result:
             cur.close()
             conn.close()
-            return {"statusCode": 403, "body": json.dumps({"error": "Escrow not found or not owned by you"})}
+            return {
+                "statusCode": 401,
+                "body": json.dumps({"error": "Invalid or expired token"})
+            }
+        
+        user_id, role = user_result
 
-        # Update escrow status to payment pending confirmation
+    except Exception as e:
+        cur.close()
+        conn.close()
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": "Token validation failed", "details": str(e)})
+        }
+
+    # Mark escrow as paid
+    try:
+        # Check if the user is allowed to mark this escrow as paid (must be the buyer)
         cur.execute("""
-            UPDATE escrows
-            SET status = %s,
-                buyer_tx_id = %s,
-                buyer_proof_url = %s,
-                buyer_note = %s,
-                paid_at = %s
-            WHERE id = %s;
-        """, (
-            "payment_pending_confirmation",
-            tx_id or None,
-            proof_url or None,
-            note or None,
-            datetime.utcnow(),
-            escrow_id
-        ))
+            SELECT id, status 
+            FROM escrows 
+            WHERE id = %s AND buyer_id = %s
+        """, (escrow_id, user_id))
+
+        escrow_result = cur.fetchone()
+        if not escrow_result:
+            cur.close()
+            conn.close()
+            return {
+                "statusCode": 404,
+                "body": json.dumps({"error": "Escrow not found or access denied"})
+            }
+
+        current_status = escrow_result[1]
+        
+        # Check if escrow is already paid or completed
+        if current_status in ['paid', 'completed', 'released']:
+            cur.close()
+            conn.close()
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"error": f"Escrow is already {current_status}"})
+            }
+
+        # Update escrow status to 'paid'
+        cur.execute("""
+            UPDATE escrows 
+            SET status = 'paid', updated_at = %s
+            WHERE id = %s
+        """, (datetime.datetime.utcnow(), escrow_id))
+        
         conn.commit()
         cur.close()
         conn.close()
 
         return {
             "statusCode": 200,
-            "headers": {"Content-Type": "application/json"},
             "body": json.dumps({
-                "message": "Escrow marked as paid. Awaiting seller confirmation.",
+                "success": True,
+                "message": "Escrow marked as paid successfully",
                 "escrow_id": escrow_id,
-                "status": "payment_pending_confirmation"
+                "previous_status": current_status,
+                "new_status": "paid"
             })
         }
 
@@ -126,5 +140,5 @@ def handler(event, context):
         conn.close()
         return {
             "statusCode": 500,
-            "body": json.dumps({"error": "Failed to update escrow", "details": str(e)})
+            "body": json.dumps({"error": "Failed to mark escrow as paid", "details": str(e)})
         }
