@@ -6,37 +6,31 @@ import datetime
 def handler(event, context):
     """
     Netlify Python Function: /me
-    Returns information about the currently logged-in user
-    based on their session cookie.
+    Returns the current user's profile (requires authentication via token)
     """
 
-    # Get cookies from headers
-    headers = event.get("headers", {}) or {}
-    cookie_header = headers.get("cookie") or headers.get("Cookie") or ""
-    cookies = {}
-
-    for item in cookie_header.split(";"):
-        if "=" in item:
-            name, value = item.strip().split("=", 1)
-            cookies[name] = value
-
-    session_token = cookies.get("session")
-
-    if not session_token:
+    # Get token from Authorization header
+    headers = event.get('headers', {})
+    auth_header = headers.get('authorization', '') or headers.get('Authorization', '')
+    
+    if not auth_header or not auth_header.startswith('Bearer '):
         return {
             "statusCode": 401,
-            "body": json.dumps({"error": "No session token found"})
+            "body": json.dumps({"error": "Missing or invalid authorization header"})
         }
+    
+    token = auth_header.replace('Bearer ', '').strip()
 
-    # Connect to Neon database
+    # Connect to Neon DB using ONLY DATABASE_URL
     try:
-        conn = psycopg2.connect(
-            host=os.getenv("DB_HOST"),
-            database=os.getenv("DB_NAME"),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASS"),
-            sslmode="require"
-        )
+        database_url = os.getenv("DATABASE_URL")
+        if not database_url:
+            return {
+                "statusCode": 500,
+                "body": json.dumps({"error": "DATABASE_URL environment variable not set"})
+            }
+        
+        conn = psycopg2.connect(database_url)
         cur = conn.cursor()
     except Exception as e:
         return {
@@ -44,50 +38,36 @@ def handler(event, context):
             "body": json.dumps({"error": "Database connection failed", "details": str(e)})
         }
 
-    # Verify session token and return user info
+    # Validate token and get user info
     try:
         cur.execute("""
-            SELECT u.id, u.name, u.email, u.role, s.expires_at
-            FROM sessions s
-            JOIN users u ON s.user_id = u.id
-            WHERE s.session_token = %s;
-        """, (session_token,))
-        row = cur.fetchone()
-
-        if not row:
+            SELECT u.id, u.email, u.name, u.role, u.balance
+            FROM sessions s 
+            JOIN users u ON s.user_id = u.id 
+            WHERE s.session_token = %s AND s.expires_at > %s
+        """, (token, datetime.datetime.utcnow()))
+        
+        user_result = cur.fetchone()
+        if not user_result:
             cur.close()
             conn.close()
             return {
                 "statusCode": 401,
-                "body": json.dumps({"error": "Invalid or expired session"})
+                "body": json.dumps({"error": "Invalid or expired token"})
             }
-
-        user_id, name, email, role, expires_at = row
-
-        # Check expiration
-        if expires_at and expires_at < datetime.datetime.utcnow():
-            # Session expired, delete it
-            cur.execute("DELETE FROM sessions WHERE session_token = %s;", (session_token,))
-            conn.commit()
-            cur.close()
-            conn.close()
-            return {
-                "statusCode": 401,
-                "body": json.dumps({"error": "Session expired"})
-            }
-
+        
+        user_id, email, name, role, balance = user_result
         cur.close()
         conn.close()
 
-        # Return user info
         return {
             "statusCode": 200,
-            "headers": {"Content-Type": "application/json"},
             "body": json.dumps({
                 "id": user_id,
-                "name": name,
                 "email": email,
-                "role": role
+                "name": name,
+                "role": role,
+                "balance": balance
             })
         }
 
@@ -96,5 +76,5 @@ def handler(event, context):
         conn.close()
         return {
             "statusCode": 500,
-            "body": json.dumps({"error": "Error fetching user info", "details": str(e)})
+            "body": json.dumps({"error": "Failed to get user profile", "details": str(e)})
         }
