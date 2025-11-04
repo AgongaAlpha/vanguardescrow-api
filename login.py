@@ -109,7 +109,7 @@ def handler(event, context):
             "statusCode": 200,
             "headers": {
                 "Content-Type": "application/json",
-                "Set-Cookie": f"session={session_token}; HttpOnly; Path=/; Max-Age=86400; SameSite=Lax"
+               "Set-Cookie": f"session={session_token}; Path=/; Max-Age=86400; SameSite=None; Secure"
             },
             "body": json.dumps({
                 "message": "Login successful",
@@ -125,3 +125,4 @@ def handler(event, context):
             "statusCode": 500,
             "body": json.dumps({"error": "Login failed", "details": str(e)})
         }
+
