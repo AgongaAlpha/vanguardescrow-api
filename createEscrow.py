@@ -26,7 +26,6 @@ def handler(event, context):
         data = json.loads(event.get("body", "{}"))
         amount = data.get("amount")
         paymentMethod = data.get("paymentMethod")
-        currency = data.get("currency", "USD")
         seller_email = data.get("seller_email")
     except Exception as e:
         return {
@@ -110,12 +109,12 @@ def handler(event, context):
         
         seller_id = seller_result[0]
 
-        # Insert escrow
+        # Insert escrow (without currency column)
         cur.execute("""
-            INSERT INTO escrows (buyer_id, seller_id, amount, currency, payment_method, status)
-            VALUES (%s, %s, %s, %s, %s, 'pending')
+            INSERT INTO escrows (buyer_id, seller_id, amount, payment_method, status)
+            VALUES (%s, %s, %s, %s, 'pending')
             RETURNING id;
-        """, (user_id, seller_id, amount, currency, paymentMethod))
+        """, (user_id, seller_id, amount, paymentMethod))
         
         escrow_id = cur.fetchone()[0]
         conn.commit()
@@ -131,7 +130,6 @@ def handler(event, context):
                 "buyer_email": user_email,
                 "seller_email": seller_email,
                 "amount": amount,
-                "currency": currency,
                 "payment_method": paymentMethod
             })
         }
