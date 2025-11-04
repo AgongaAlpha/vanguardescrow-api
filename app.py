@@ -15,7 +15,7 @@ def after_request(response):
     return response
 
 # Import all your function files dynamically
-functions_dir = "netlifyfunctions/functions"
+functions_dir = "functions"  # ← CHANGED FROM "netlifyfunctions/functions"
 
 @app.route('/.netlify/functions/<function_name>', methods=['GET', 'POST', 'OPTIONS'])
 @app.route('/<function_name>', methods=['GET', 'POST', 'OPTIONS'])
