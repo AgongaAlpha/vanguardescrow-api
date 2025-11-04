@@ -1,0 +1,102 @@
+import json
+import os
+import psycopg2
+import hashlib
+import secrets
+import datetime
+
+def handler(event, context):
+    """
+    Netlify Python Function: /login
+    Handles secure user login for Vanguard Escrow.
+    """
+
+    # Parse incoming JSON
+    try:
+        data = json.loads(event.get("body", "{}"))
+        email = data.get("email", "").strip().lower()
+        password = data.get("password", "")
+    except Exception as e:
+        return {
+            "statusCode": 400,
+            "body": json.dumps({"error": "Invalid JSON body", "details": str(e)})
+        }
+
+    if not email or not password:
+        return {
+            "statusCode": 400,
+            "body": json.dumps({"error": "Email and password required"})
+        }
+
+    # Connect to Neon DB
+    try:
+        conn = psycopg2.connect(
+            host=os.getenv("DB_HOST"),
+            database=os.getenv("DB_NAME"),
+            user=os.getenv("DB_USER"),
+            password=os.getenv("DB_PASS"),
+            sslmode="require"
+        )
+        cur = conn.cursor()
+    except Exception as e:
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": "Database connection failed", "details": str(e)})
+        }
+
+    # Check user credentials
+    try:
+        cur.execute("SELECT id, password_hash, role FROM users WHERE email = %s;", (email,))
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            conn.close()
+            return {
+                "statusCode": 401,
+                "body": json.dumps({"error": "Invalid email or password"})
+            }
+
+        user_id, stored_hash, role = row
+        given_hash = hashlib.sha256(password.encode()).hexdigest()
+
+        if stored_hash != given_hash:
+            cur.close()
+            conn.close()
+            return {
+                "statusCode": 401,
+                "body": json.dumps({"error": "Invalid email or password"})
+            }
+
+        # Create session token
+        session_token = secrets.token_hex(32)
+        expires_at = datetime.datetime.utcnow() + datetime.timedelta(days=1)
+
+        # Store session in DB
+        cur.execute("""
+            INSERT INTO sessions (user_id, session_token, expires_at)
+            VALUES (%s, %s, %s);
+        """, (user_id, session_token, expires_at))
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        # Return success + set cookie header
+        return {
+            "statusCode": 200,
+            "headers": {
+                "Set-Cookie": f"session={session_token}; HttpOnly; Secure; Path=/; Max-Age=86400; SameSite=Lax",
+                "Content-Type": "application/json"
+            },
+            "body": json.dumps({
+                "message": "Login successful",
+                "role": role
+            })
+        }
+
+    except Exception as e:
+        cur.close()
+        conn.close()
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": "Login failed", "details": str(e)})
+        }
