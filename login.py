@@ -28,15 +28,16 @@ def handler(event, context):
             "body": json.dumps({"error": "Email and password required"})
         }
 
-    # Connect to Neon DB
+    # Connect to Neon DB using ONLY DATABASE_URL
     try:
-        conn = psycopg2.connect(
-            host=os.getenv("DB_HOST"),
-            database=os.getenv("DB_NAME"),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASS"),
-            sslmode="require"
-        )
+        database_url = os.getenv("DATABASE_URL")
+        if not database_url:
+            return {
+                "statusCode": 500,
+                "body": json.dumps({"error": "DATABASE_URL environment variable not set"})
+            }
+        
+        conn = psycopg2.connect(database_url)
         cur = conn.cursor()
     except Exception as e:
         return {
