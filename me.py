@@ -2,6 +2,7 @@ import json
 import os
 import psycopg2
 import datetime
+from decimal import Decimal
 
 def handler(event, context):
     """
@@ -57,6 +58,11 @@ def handler(event, context):
             }
         
         user_id, email, name, role, balance = user_result
+        
+        # Convert Decimal to float for JSON serialization
+        if isinstance(balance, Decimal):
+            balance = float(balance)
+        
         cur.close()
         conn.close()
 
