@@ -69,12 +69,12 @@ def handler(event, context):
         # Create password hash
         password_hash = hashlib.sha256(password.encode()).hexdigest()
 
-        # Insert new user
+        # Insert new user - using your existing schema
         cur.execute("""
-            INSERT INTO users (email, password_hash, name, role)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO users (email, name, role, balance, auth0_sub)
+            VALUES (%s, %s, %s, %s, %s)
             RETURNING id;
-        """, (email, password_hash, name, role))
+        """, (email, name, role, 0.0, password_hash))  # Using auth0_sub to store password_hash
         
         user_id = cur.fetchone()[0]
         conn.commit()
