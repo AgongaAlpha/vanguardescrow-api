@@ -1,89 +1,56 @@
 import json
 import os
 import psycopg2
-from http import cookies
-
-def get_session_user(headers):
-    """Helper to extract logged-in user ID and role from the session cookie."""
-    cookie_header = headers.get("cookie") or headers.get("Cookie") or ""
-    cookie_obj = cookies.SimpleCookie()
-    cookie_obj.load(cookie_header)
-
-    session_token = None
-    if "session" in cookie_obj:
-        session_token = cookie_obj["session"].value
-
-    if not session_token:
-        return None
-
-    try:
-        conn = psycopg2.connect(
-            host=os.getenv("DB_HOST"),
-            database=os.getenv("DB_NAME"),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASS"),
-            sslmode="require"
-        )
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT u.id, u.role 
-            FROM sessions s 
-            JOIN users u ON s.user_id = u.id 
-            WHERE s.session_token = %s;
-        """, (session_token,))
-        user = cur.fetchone()
-        cur.close()
-        conn.close()
-        if not user:
-            return None
-        return {"id": user[0], "role": user[1]}
-    except Exception as e:
-        print("Session check failed:", e)
-        return None
-
+import datetime
 
 def handler(event, context):
-    """POST /.netlify/functions/createEscrow"""
+    """
+    Netlify Python Function: /createEscrow
+    Creates a new escrow transaction (requires authentication via token)
+    """
+
+    # Get token from Authorization header
+    headers = event.get('headers', {})
+    auth_header = headers.get('authorization', '') or headers.get('Authorization', '')
+    
+    if not auth_header or not auth_header.startswith('Bearer '):
+        return {
+            "statusCode": 401,
+            "body": json.dumps({"error": "Missing or invalid authorization header"})
+        }
+    
+    token = auth_header.replace('Bearer ', '').strip()
 
     # Parse request body
     try:
         data = json.loads(event.get("body", "{}"))
-    except Exception:
+        amount = data.get("amount")
+        paymentMethod = data.get("paymentMethod")
+        currency = data.get("currency", "USD")
+        seller_email = data.get("seller_email")
+    except Exception as e:
         return {
             "statusCode": 400,
-            "body": json.dumps({"error": "Invalid JSON body"})
+            "body": json.dumps({"error": "Invalid JSON body", "details": str(e)})
         }
 
-    # Required fields
-    seller_id = data.get("seller_id")
-    amount = data.get("amount")
-    payment_method = data.get("paymentMethod", "").strip()
-    preferred_wallet = data.get("preferred_wallet", "").strip()
-    agreement = data.get("agreement", "").strip()
-
-    # Validate input
-    if not amount or not payment_method:
+    # Validate required fields
+    if not amount or not paymentMethod or not seller_email:
         return {
             "statusCode": 400,
-            "body": json.dumps({"error": "Missing required fields (amount, paymentMethod)"})
+            "body": json.dumps({"error": "Missing required fields (amount, paymentMethod, seller_email)"})
         }
-
-    # Get session user
-    user = get_session_user(event.get("headers", {}))
-    if not user:
-        return {"statusCode": 401, "body": json.dumps({"error": "Not authenticated"})}
-    if user["role"] != "buyer":
-        return {"statusCode": 403, "body": json.dumps({"error": "Only buyers can create escrows"})}
 
     # Connect to Neon DB
     try:
-        conn = psycopg2.connect(
-            host=os.getenv("DB_HOST"),
-            database=os.getenv("DB_NAME"),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASS"),
-            sslmode="require"
-        )
+        database_url = os.getenv("DATABASE_URL")
+        if not database_url:
+            return {
+                "statusCode": 500,
+                "body": json.dumps({"error": "DATABASE_URL environment variable not set"})
+            }
+        
+        conn = psycopg2.connect(database_url)
         cur = conn.cursor()
     except Exception as e:
         return {
@@ -91,23 +58,65 @@ def handler(event, context):
             "body": json.dumps({"error": "Database connection failed", "details": str(e)})
         }
 
+    # Validate token and get user info
     try:
-        cur.execute(
-            """
-            INSERT INTO escrows (buyer_id, seller_id, amount, payment_method, payment_details, agreement, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        cur.execute("""
+            SELECT u.id, u.email, u.role 
+            FROM sessions s 
+            JOIN users u ON s.user_id = u.id 
+            WHERE s.session_token = %s AND s.expires_at > %s
+        """, (token, datetime.datetime.utcnow()))
+        
+        user_result = cur.fetchone()
+        if not user_result:
+            cur.close()
+            conn.close()
+            return {
+                "statusCode": 401,
+                "body": json.dumps({"error": "Invalid or expired token"})
+            }
+        
+        user_id, user_email, user_role = user_result
+        
+        # Check if user is a buyer
+        if user_role != 'buyer':
+            cur.close()
+            conn.close()
+            return {
+                "statusCode": 403,
+                "body": json.dumps({"error": "Only buyers can create escrows"})
+            }
+
+    except Exception as e:
+        cur.close()
+        conn.close()
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": "Token validation failed", "details": str(e)})
+        }
+
+    # Create escrow
+    try:
+        # Check if seller exists
+        cur.execute("SELECT id FROM users WHERE email = %s AND role = 'seller'", (seller_email,))
+        seller_result = cur.fetchone()
+        if not seller_result:
+            cur.close()
+            conn.close()
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"error": "Seller not found or not a seller"})
+            }
+        
+        seller_id = seller_result[0]
+
+        # Insert escrow
+        cur.execute("""
+            INSERT INTO escrows (buyer_id, seller_id, amount, currency, payment_method, status)
+            VALUES (%s, %s, %s, %s, %s, 'pending')
             RETURNING id;
-            """,
-            (
-                user["id"],
-                seller_id,
-                amount,
-                payment_method,
-                preferred_wallet,
-                agreement,
-                "pending"
-            )
-        )
+        """, (user_id, seller_id, amount, currency, paymentMethod))
+        
         escrow_id = cur.fetchone()[0]
         conn.commit()
         cur.close()
@@ -115,10 +124,15 @@ def handler(event, context):
 
         return {
             "statusCode": 200,
-            "headers": {"Content-Type": "application/json"},
             "body": json.dumps({
+                "success": True,
                 "message": "Escrow created successfully",
-                "escrow_id": escrow_id
+                "escrow_id": escrow_id,
+                "buyer_email": user_email,
+                "seller_email": seller_email,
+                "amount": amount,
+                "currency": currency,
+                "payment_method": paymentMethod
             })
         }
 
