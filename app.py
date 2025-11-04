@@ -14,47 +14,18 @@ def after_request(response):
     response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
     return response
 
-# Import all your function files dynamically
-functions_dir = "functions"
-
-# Debug endpoint to check file structure
-@app.route('/debug')
-def debug_files():
-    try:
-        current_dir = os.getcwd()
-        files_in_root = os.listdir('.')
-        functions_path = os.path.join(current_dir, functions_dir)
-        
-        if os.path.exists(functions_path):
-            function_files = os.listdir(functions_path)
-        else:
-            function_files = ["FUNCTIONS DIRECTORY NOT FOUND"]
-            
-        return jsonify({
-            "current_directory": current_dir,
-            "files_in_root": files_in_root,
-            "functions_directory": functions_path,
-            "function_files": function_files,
-            "hello.py_exists": os.path.exists(os.path.join(functions_path, "hello.py"))
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+# Import all your function files dynamically - THEY ARE IN THE CURRENT DIRECTORY
+functions_dir = "."  # ← CHANGED TO CURRENT DIRECTORY
 
 @app.route('/.netlify/functions/<function_name>', methods=['GET', 'POST', 'OPTIONS'])
 @app.route('/<function_name>', methods=['GET', 'POST', 'OPTIONS'])
 def route_function(function_name):
     try:
         # Find the Python file
-        python_file = f"{functions_dir}/{function_name}.py"
-        absolute_path = os.path.abspath(python_file)
+        python_file = f"{function_name}.py"  # ← CHANGED - No directory prefix
         
         if not os.path.exists(python_file):
-            return jsonify({
-                "error": f"Function {function_name} not found",
-                "looking_in": python_file,
-                "absolute_path": absolute_path,
-                "current_directory": os.getcwd()
-            }), 404
+            return jsonify({"error": f"Function {function_name} not found at {python_file}"}), 404
         
         # Dynamically import the module
         spec = importlib.util.spec_from_file_location(function_name, python_file)
