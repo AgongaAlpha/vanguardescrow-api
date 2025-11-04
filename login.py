@@ -82,12 +82,12 @@ def handler(event, context):
         cur.close()
         conn.close()
 
-        # Return success + set cookie header
+        # Return success with Set-Cookie header - FIXED VERSION
         return {
             "statusCode": 200,
             "headers": {
-                "Set-Cookie": f"session={session_token}; HttpOnly; Secure; Path=/; Max-Age=86400; SameSite=Lax",
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
+                "Set-Cookie": f"session={session_token}; HttpOnly; Path=/; Max-Age=86400; SameSite=Lax"
             },
             "body": json.dumps({
                 "message": "Login successful",
