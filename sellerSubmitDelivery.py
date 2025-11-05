@@ -1,42 +1,8 @@
 import os
 import json
 import psycopg2
-from http import cookies
-from datetime import datetime
+import datetime
 import base64
-
-def get_session_user(headers):
-    cookie_header = headers.get("cookie") or headers.get("Cookie") or ""
-    cookie_obj = cookies.SimpleCookie()
-    cookie_obj.load(cookie_header)
-    token = cookie_obj.get("session").value if "session" in cookie_obj else None
-    if not token:
-        return None
-    try:
-        conn = psycopg2.connect(
-            host=os.getenv("DB_HOST"),
-            database=os.getenv("DB_NAME"),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASS"),
-            sslmode="require"
-        )
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT u.id, u.role, u.name, u.email
-            FROM sessions s
-            JOIN users u ON s.user_id = u.id
-            WHERE s.session_token = %s;
-        """, (token,))
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
-        if not row:
-            return None
-        return {"id": row[0], "role": row[1], "name": row[2], "email": row[3]}
-    except Exception as e:
-        print("session error:", e)
-        return None
-
 
 def handler(event, context):
     """
@@ -52,13 +18,72 @@ def handler(event, context):
         ]
     }
     """
-    headers = event.get("headers", {}) or {}
-    user = get_session_user(headers)
-    if not user:
-        return {"statusCode": 401, "body": json.dumps({"error": "Not authenticated"})}
+
+    # Get token from Authorization header
+    headers = event.get('headers', {})
+    auth_header = headers.get('authorization', '') or headers.get('Authorization', '')
+    
+    if not auth_header or not auth_header.startswith('Bearer '):
+        return {
+            "statusCode": 401,
+            "body": json.dumps({"error": "Missing or invalid authorization header"})
+        }
+    
+    token = auth_header.replace('Bearer ', '').strip()
+
+    # Connect to Neon DB using DATABASE_URL
+    try:
+        database_url = os.getenv("DATABASE_URL")
+        if not database_url:
+            return {
+                "statusCode": 500,
+                "body": json.dumps({"error": "DATABASE_URL environment variable not set"})
+            }
+        
+        conn = psycopg2.connect(database_url)
+        cur = conn.cursor()
+    except Exception as e:
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": "Database connection failed", "details": str(e)})
+        }
+
+    # Validate token and get user info
+    try:
+        cur.execute("""
+            SELECT u.id, u.role, u.name, u.email
+            FROM sessions s 
+            JOIN users u ON s.user_id = u.id 
+            WHERE s.session_token = %s AND s.expires_at > %s
+        """, (token, datetime.datetime.utcnow()))
+        
+        user_result = cur.fetchone()
+        if not user_result:
+            cur.close()
+            conn.close()
+            return {
+                "statusCode": 401,
+                "body": json.dumps({"error": "Invalid or expired token"})
+            }
+        
+        user_id, role, name, email = user_result
+        user = {"id": user_id, "role": role, "name": name, "email": email}
+
+    except Exception as e:
+        cur.close()
+        conn.close()
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": "Token validation failed", "details": str(e)})
+        }
+
+    # Check if user is seller
     if user["role"] != "seller":
+        cur.close()
+        conn.close()
         return {"statusCode": 403, "body": json.dumps({"error": "Only sellers allowed"})}
 
+    # Parse request body
     try:
         body = json.loads(event.get("body") or "{}")
         escrow_id = body.get("escrowId")
@@ -66,20 +91,16 @@ def handler(event, context):
         deliverable_content = body.get("deliverableContent", "")
         attachments = body.get("attachments", [])
         if not escrow_id:
+            cur.close()
+            conn.close()
             return {"statusCode": 400, "body": json.dumps({"error": "escrowId is required"})}
     except Exception:
+        cur.close()
+        conn.close()
         return {"statusCode": 400, "body": json.dumps({"error": "Invalid JSON input"})}
 
+    # Process delivery submission
     try:
-        conn = psycopg2.connect(
-            host=os.getenv("DB_HOST"),
-            database=os.getenv("DB_NAME"),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASS"),
-            sslmode="require"
-        )
-        cur = conn.cursor()
-
         # Verify the escrow belongs to this seller
         cur.execute("SELECT id, status FROM escrows WHERE id = %s AND seller_id = %s;", (escrow_id, user["id"]))
         escrow = cur.fetchone()
@@ -103,7 +124,7 @@ def handler(event, context):
                 delivered_at = %s,
                 updated_at = %s
             WHERE id = %s;
-        """, (delivery_terms, deliverable_content, datetime.utcnow(), datetime.utcnow(), escrow_id))
+        """, (delivery_terms, deliverable_content, datetime.datetime.utcnow(), datetime.datetime.utcnow(), escrow_id))
 
         # Insert attachments if any
         for file in attachments:
@@ -119,7 +140,7 @@ def handler(event, context):
             cur.execute("""
                 INSERT INTO escrow_files (escrow_id, file_name, purpose, uploaded_at)
                 VALUES (%s, %s, 'delivery', %s);
-            """, (escrow_id, filename, datetime.utcnow()))
+            """, (escrow_id, filename, datetime.datetime.utcnow()))
 
         # Record transaction
         cur.execute("""
