@@ -1,118 +1,119 @@
 import json
 import os
 import psycopg2
-from http import cookies
-from datetime import datetime
-
-def get_session_user(headers):
-    cookie_header = headers.get("cookie") or headers.get("Cookie") or ""
-    cookie_obj = cookies.SimpleCookie()
-    cookie_obj.load(cookie_header)
-    token = cookie_obj.get("session").value if "session" in cookie_obj else None
-    if not token:
-        return None
-    try:
-        conn = psycopg2.connect(
-            host=os.getenv("DB_HOST"),
-            database=os.getenv("DB_NAME"),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASS"),
-            sslmode="require"
-        )
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT u.id, u.role, u.name, u.email
-            FROM sessions s
-            JOIN users u ON s.user_id = u.id
-            WHERE s.session_token = %s;
-        """, (token,))
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
-        if not row:
-            return None
-        return {"id": row[0], "role": row[1], "name": row[2], "email": row[3]}
-    except Exception as e:
-        print("session error:", e)
-        return None
+import datetime
+from decimal import Decimal
 
 def handler(event, context):
     """
-    GET /.netlify/functions/sellerPendingEscrows
-    Returns pending escrows assigned to the logged-in seller
-    Optional query params: limit, offset, status
+    Netlify Python Function: /sellerPendingEscrows
+    Returns the current seller's pending escrows (requires authentication via token)
     """
-    headers = event.get("headers", {}) or {}
-    user = get_session_user(headers)
-    if not user:
-        return {"statusCode": 401, "body": json.dumps({"error": "Not authenticated"})}
-    if user["role"] != "seller":
-        return {"statusCode": 403, "body": json.dumps({"error": "Only sellers allowed"})}
 
-    qs = event.get("queryStringParameters") or {}
-    limit = int(qs.get("limit", 50))
-    offset = int(qs.get("offset", 0))
-    status_filter = qs.get("status")  # optional
+    # Get token from Authorization header
+    headers = event.get('headers', {})
+    auth_header = headers.get('authorization', '') or headers.get('Authorization', '')
+    
+    if not auth_header or not auth_header.startswith('Bearer '):
+        return {
+            "statusCode": 401,
+            "body": json.dumps({"error": "Missing or invalid authorization header"})
+        }
+    
+    token = auth_header.replace('Bearer ', '').strip()
 
-    # default pending statuses (adjust to your workflow)
-    pending_statuses = ("pending", "awaiting_deposit", "deposit_noted", "payment_pending_confirmation")
-
+    # Connect to Neon DB using ONLY DATABASE_URL
     try:
-        conn = psycopg2.connect(
-            host=os.getenv("DB_HOST"),
-            database=os.getenv("DB_NAME"),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASS"),
-            sslmode="require"
-        )
+        database_url = os.getenv("DATABASE_URL")
+        if not database_url:
+            return {
+                "statusCode": 500,
+                "body": json.dumps({"error": "DATABASE_URL environment variable not set"})
+            }
+        
+        conn = psycopg2.connect(database_url)
         cur = conn.cursor()
+    except Exception as e:
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": "Database connection failed", "details": str(e)})
+        }
 
-        if status_filter:
-            cur.execute("""
-                SELECT e.id, e.amount, e.status, e.created_at, e.buyer_id, u.name, u.email
-                FROM escrows e
-                LEFT JOIN users u ON e.buyer_id = u.id
-                WHERE e.seller_id = %s AND e.status = %s
-                ORDER BY e.created_at DESC
-                LIMIT %s OFFSET %s;
-            """, (user["id"], status_filter, limit, offset))
-        else:
-            cur.execute("""
-                SELECT e.id, e.amount, e.status, e.created_at, e.buyer_id, u.name, u.email
-                FROM escrows e
-                LEFT JOIN users u ON e.buyer_id = u.id
-                WHERE e.seller_id = %s AND e.status = ANY(%s::text[])
-                ORDER BY e.created_at DESC
-                LIMIT %s OFFSET %s;
-            """, (user["id"], list(pending_statuses), limit, offset))
+    # Validate token and get user info
+    try:
+        cur.execute("""
+            SELECT u.id, u.role
+            FROM sessions s 
+            JOIN users u ON s.user_id = u.id 
+            WHERE s.session_token = %s AND s.expires_at > %s
+        """, (token, datetime.datetime.utcnow()))
+        
+        user_result = cur.fetchone()
+        if not user_result:
+            cur.close()
+            conn.close()
+            return {
+                "statusCode": 401,
+                "body": json.dumps({"error": "Invalid or expired token"})
+            }
+        
+        user_id, role = user_result
 
-        rows = cur.fetchall()
+        # Check if the user is a seller
+        if role != 'seller':
+            cur.close()
+            conn.close()
+            return {
+                "statusCode": 403,
+                "body": json.dumps({"error": "Only sellers can access this endpoint"})
+            }
+
+    except Exception as e:
+        cur.close()
+        conn.close()
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": "Token validation failed", "details": str(e)})
+        }
+
+    # Get seller's pending escrows
+    try:
+        cur.execute("""
+            SELECT id, amount, payment_method, status, created_at 
+            FROM escrows 
+            WHERE seller_id = %s AND status IN ('pending', 'paid')
+        """, (user_id,))
+
+        escrows = cur.fetchall()
+        escrows_list = []
+        for escrow in escrows:
+            # Convert Decimal to float for JSON serialization
+            amount = escrow[1]
+            if isinstance(amount, Decimal):
+                amount = float(amount)
+
+            escrows_list.append({
+                "id": escrow[0],
+                "amount": amount,
+                "payment_method": escrow[2],
+                "status": escrow[3],
+                "created_at": escrow[4].isoformat() if escrow[4] else None,
+            })
+
         cur.close()
         conn.close()
 
-        escrows = []
-        for r in rows:
-            escrows.append({
-                "id": r[0],
-                "amount": float(r[1]) if r[1] is not None else None,
-                "status": r[2],
-                "created_at": r[3].isoformat() if r[3] else None,
-                "buyer_id": r[4],
-                "buyer_name": r[5],
-                "buyer_email": r[6]
-            })
-
         return {
             "statusCode": 200,
-            "headers": {"Content-Type": "application/json"},
-            "body": json.dumps({"escrows": escrows})
+            "body": json.dumps({
+                "escrows": escrows_list
+            })
         }
 
     except Exception as e:
-        print("DB error:", e)
-        try:
-            cur.close()
-            conn.close()
-        except:
-            pass
-        return {"statusCode": 500, "body": json.dumps({"error": "DB query failed", "details": str(e)})}
+        cur.close()
+        conn.close()
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": "Failed to get pending escrows", "details": str(e)})
+        }
