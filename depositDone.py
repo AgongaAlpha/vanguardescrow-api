@@ -112,4 +112,4 @@ def handler(event, context):
             conn.close()
         except:
             pass
-        return {"statusCode": 500, "body": json.dumps({"error": "Database operation failed", "details": str(e)})}
+        return {"statusCode": 500, "body": json.dumps({"error": "Database operation f
