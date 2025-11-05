@@ -74,6 +74,10 @@ def handler(event, context):
     try:
         data = json.loads(event.get("body", "{}"))
         escrow_id = data.get("escrowId")
+        if not escrow_id:
+            cur.close()
+            conn.close()
+            return {"statusCode": 400, "body": json.dumps({"error": "escrowId is required"})}
     except Exception:
         cur.close()
         conn.close()
@@ -112,4 +116,4 @@ def handler(event, context):
             conn.close()
         except:
             pass
-        return {"statusCode": 500, "body": json.dumps({"error": "Database operation f
+        return {"statusCode": 500, "body": json.dumps({"error": "Database operation failed", "details": str(e)})}
