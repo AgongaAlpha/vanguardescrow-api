@@ -3,24 +3,23 @@ import importlib.util
 import sys
 import os
 import json
-from flask_cors import CORS  # ← ADD THIS IMPORT
 
 app = Flask(__name__)
 
-# Enable CORS with specific origins ← ADD THIS SECTION
-CORS(app, origins=[
-    "https://vanguardescrow.online", 
-    "https://www.vanguardescrow.online",
-    "http://localhost:3000"  # For local development
-])
+# Manual CORS handling - more comprehensive
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', 'https://vanguardescrow.online')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization,Origin,Accept')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    response.headers.add('Access-Control-Allow-Credentials', 'true')
+    return response
 
-# Remove the old manual CORS headers - they're not needed anymore
-# @app.after_request
-# def after_request(response):
-#     response.headers.add('Access-Control-Allow-Origin', '*')
-#     response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-#     response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-#     return response
+# Handle OPTIONS requests for all routes
+@app.route('/', methods=['OPTIONS'])
+@app.route('/<path:path>', methods=['OPTIONS'])
+def options_handler(path=None):
+    return '', 200
 
 # Import all your function files dynamically - THEY ARE IN THE CURRENT DIRECTORY
 functions_dir = "."  # ← CHANGED TO CURRENT DIRECTORY
@@ -29,6 +28,10 @@ functions_dir = "."  # ← CHANGED TO CURRENT DIRECTORY
 @app.route('/<function_name>', methods=['GET', 'POST', 'OPTIONS'])
 def route_function(function_name):
     try:
+        # Handle OPTIONS request
+        if request.method == 'OPTIONS':
+            return '', 200
+            
         # Find the Python file
         python_file = f"{function_name}.py"  # ← CHANGED - No directory prefix
         
