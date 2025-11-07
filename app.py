@@ -3,16 +3,24 @@ import importlib.util
 import sys
 import os
 import json
+from flask_cors import CORS  # ← ADD THIS IMPORT
 
 app = Flask(__name__)
 
-# Enable CORS
-@app.after_request
-def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-    return response
+# Enable CORS with specific origins ← ADD THIS SECTION
+CORS(app, origins=[
+    "https://vanguardescrow.online", 
+    "https://www.vanguardescrow.online",
+    "http://localhost:3000"  # For local development
+])
+
+# Remove the old manual CORS headers - they're not needed anymore
+# @app.after_request
+# def after_request(response):
+#     response.headers.add('Access-Control-Allow-Origin', '*')
+#     response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+#     response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+#     return response
 
 # Import all your function files dynamically - THEY ARE IN THE CURRENT DIRECTORY
 functions_dir = "."  # ← CHANGED TO CURRENT DIRECTORY
