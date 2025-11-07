@@ -6,34 +6,35 @@ import json
 
 app = Flask(__name__)
 
-# Manual CORS handling - more comprehensive
+# Manual CORS handling - COMPREHENSIVE
 @app.after_request
 def after_request(response):
     response.headers.add('Access-Control-Allow-Origin', 'https://vanguardescrow.online')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization,Origin,Accept')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization,Origin,Accept,X-Requested-With')
     response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
     response.headers.add('Access-Control-Allow-Credentials', 'true')
+    response.headers.add('Access-Control-Max-Age', '86400')  # 24 hours
     return response
 
-# Handle OPTIONS requests for all routes
+# Handle OPTIONS requests for ALL routes
 @app.route('/', methods=['OPTIONS'])
 @app.route('/<path:path>', methods=['OPTIONS'])
-def options_handler(path=None):
+def handle_options(path=None):
     return '', 200
 
-# Import all your function files dynamically - THEY ARE IN THE CURRENT DIRECTORY
-functions_dir = "."  # ← CHANGED TO CURRENT DIRECTORY
+# Import all your function files dynamically
+functions_dir = "."
 
-@app.route('/.netlify/functions/<function_name>', methods=['GET', 'POST', 'OPTIONS'])
-@app.route('/<function_name>', methods=['GET', 'POST', 'OPTIONS'])
+@app.route('/.netlify/functions/<function_name>', methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'])
+@app.route('/<function_name>', methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'])
 def route_function(function_name):
     try:
-        # Handle OPTIONS request
+        # Handle OPTIONS request immediately
         if request.method == 'OPTIONS':
             return '', 200
             
         # Find the Python file
-        python_file = f"{function_name}.py"  # ← CHANGED - No directory prefix
+        python_file = f"{function_name}.py"
         
         if not os.path.exists(python_file):
             return jsonify({"error": f"Function {function_name} not found at {python_file}"}), 404
