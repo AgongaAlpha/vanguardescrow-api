@@ -6,21 +6,23 @@ import json
 
 app = Flask(__name__)
 
-# Manual CORS handling - COMPREHENSIVE
+# GLOBAL OPTIONS HANDLER - CATCH ALL OPTIONS REQUESTS
+@app.before_request
+def handle_options():
+    if request.method == 'OPTIONS':
+        response = jsonify({'status': 'preflight'})
+        response.headers.add('Access-Control-Allow-Origin', 'https://vanguardescrow.online')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+        return response
+
+# AFTER REQUEST CORS HEADERS
 @app.after_request
 def after_request(response):
     response.headers.add('Access-Control-Allow-Origin', 'https://vanguardescrow.online')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization,Origin,Accept,X-Requested-With')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
     response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-    response.headers.add('Access-Control-Allow-Credentials', 'true')
-    response.headers.add('Access-Control-Max-Age', '86400')  # 24 hours
     return response
-
-# Handle OPTIONS requests for ALL routes
-@app.route('/', methods=['OPTIONS'])
-@app.route('/<path:path>', methods=['OPTIONS'])
-def handle_options(path=None):
-    return '', 200
 
 # Import all your function files dynamically
 functions_dir = "."
@@ -31,7 +33,7 @@ def route_function(function_name):
     try:
         # Handle OPTIONS request immediately
         if request.method == 'OPTIONS':
-            return '', 200
+            return jsonify({'status': 'preflight'}), 200
             
         # Find the Python file
         python_file = f"{function_name}.py"
