@@ -3,40 +3,21 @@ import importlib.util
 import sys
 import os
 import json
+from flask_cors import CORS  # ADD THIS LINE
 
 app = Flask(__name__)
+CORS(app)  # ADD THIS LINE - enables CORS for all routes
 
-# GLOBAL OPTIONS HANDLER - CATCH ALL OPTIONS REQUESTS
-@app.before_request
-def handle_options():
-    if request.method == 'OPTIONS':
-        response = jsonify({'status': 'preflight'})
-        response.headers.add('Access-Control-Allow-Origin', 'https://vanguardescrow.online')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-        response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-        return response
+# Your existing code below (keep everything else the same)
+# Import all your function files dynamically - THEY ARE IN THE CURRENT DIRECTORY
+functions_dir = "."  # ← CHANGED TO CURRENT DIRECTORY
 
-# AFTER REQUEST CORS HEADERS
-@app.after_request
-def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', 'https://vanguardescrow.online')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-    return response
-
-# Import all your function files dynamically
-functions_dir = "."
-
-@app.route('/.netlify/functions/<function_name>', methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'])
-@app.route('/<function_name>', methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'])
+@app.route('/.netlify/functions/<function_name>', methods=['GET', 'POST', 'OPTIONS'])
+@app.route('/<function_name>', methods=['GET', 'POST', 'OPTIONS'])
 def route_function(function_name):
     try:
-        # Handle OPTIONS request immediately
-        if request.method == 'OPTIONS':
-            return jsonify({'status': 'preflight'}), 200
-            
         # Find the Python file
-        python_file = f"{function_name}.py"
+        python_file = f"{function_name}.py"  # ← CHANGED - No directory prefix
         
         if not os.path.exists(python_file):
             return jsonify({"error": f"Function {function_name} not found at {python_file}"}), 404
